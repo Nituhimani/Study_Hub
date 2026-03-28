@@ -1,0 +1,29 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Optional: connect repo in Render → New → Blueprint → select this file.
+#
+# SQLite needs a persistent disk (paid) or data is lost on redeploy/sleep.
+# In the dashboard: add Disk, mount e.g. /data, then set DATABASE_PATH=/data/student_desk.db
+
+services:
+  - type: web
+    name: student-desk
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 app:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      # Required in production: generate in Render UI or: openssl rand -hex 32
+      - key: SECRET_KEY
+        sync: false
+      # If you attach a disk mounted at /data, set this in the dashboard:
+      # DATABASE_PATH=/data/student_desk.db
+      - key: DATABASE_PATH
+        sync: false
+    # Uncomment after upgrading to a plan that supports persistent disks:
+    # disk:
+    #   name: student-desk-data
+    #   mountPath: /data
+    #   sizeGB: 1

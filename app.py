@@ -14,7 +14,6 @@ from flask import Flask, g, jsonify, redirect, render_template, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "student_desk.db"
 
 
 def _env_clean(name: str) -> str | None:
@@ -27,11 +26,17 @@ def _env_clean(name: str) -> str | None:
     return v or None
 
 
+# On Render (or any host), set DATABASE_PATH to a file on a persistent disk, e.g. /data/student_desk.db
+_db_override = _env_clean("DATABASE_PATH")
+DB_PATH = Path(_db_override) if _db_override else BASE_DIR / "student_desk.db"
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def db() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
