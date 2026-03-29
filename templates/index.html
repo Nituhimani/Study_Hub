@@ -346,6 +346,45 @@
       box-shadow: 0 0 0 3px var(--glow);
     }
 
+    .note-sort {
+      min-width: 118px;
+      cursor: pointer;
+      appearance: auto;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .note-stats-line {
+      margin: 0.35rem 0 0;
+      font-size: 0.78rem;
+    }
+
+    .note-pin-star {
+      color: #ca8a04;
+      margin-right: 0.2rem;
+      font-size: 0.85rem;
+    }
+
+    [data-theme="dark"] .note-pin-star {
+      color: #fbbf24;
+    }
+
+    .btn-pin-active {
+      background: rgba(202, 138, 4, 0.15);
+      border-color: rgba(202, 138, 4, 0.45);
+      color: var(--ink);
+    }
+
     .card-b { padding: 1rem; }
 
     button, .btn {
@@ -490,6 +529,42 @@
       min-height: 240px;
       resize: vertical;
       line-height: 1.55;
+    }
+
+    .note-pdf-wrap {
+      margin-bottom: 0.75rem;
+    }
+
+    .note-pdf-wrap label {
+      display: block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+
+    .note-pdf-frame {
+      width: 100%;
+      min-height: min(52vh, 420px);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface2);
+    }
+
+    .note-pdf-badge {
+      display: inline-block;
+      font-size: 0.62rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 0.12rem 0.4rem;
+      border-radius: 6px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      margin-right: 0.25rem;
+      vertical-align: middle;
     }
 
     .editor input:focus,
@@ -1027,9 +1102,15 @@
           <div class="card-h">
             <h2>Notes</h2>
             <div class="card-h-tools">
+              <label class="sr-only" for="note-sort">Sort notes</label>
+              <select id="note-sort" class="search-notes note-sort" title="Sort order" aria-label="Sort notes">
+                <option value="pinned">Pinned first</option>
+                <option value="recent">Recent</option>
+                <option value="title">Title A–Z</option>
+              </select>
               <input type="search" id="note-search" class="search-notes" placeholder="Filter notes…" autocomplete="off" />
               <input type="file" id="note-file-import" accept=".txt,.md,.pdf,text/plain,text/markdown,application/pdf" hidden />
-              <button type="button" class="btn-muted" id="btn-import-note" title="Create a new note from .txt, .md, or .pdf on your computer">Import file</button>
+              <button type="button" class="btn-muted" id="btn-import-note" title="Import .txt or .md as text; import .pdf to store and view here">Import file</button>
               <button type="button" class="btn-primary" id="btn-new-note">New note</button>
             </div>
           </div>
@@ -1040,12 +1121,20 @@
               <div id="editor" hidden>
                 <label for="note-title">Title</label>
                 <input type="text" id="note-title" autocomplete="off" />
-                <label for="note-body">Notes</label>
+                <div class="note-pdf-wrap" id="note-pdf-wrap" hidden>
+                  <label for="note-pdf-frame">PDF</label>
+                  <iframe id="note-pdf-frame" class="note-pdf-frame" title="PDF attachment"></iframe>
+                  <p class="hint" style="margin:0.4rem 0 0"><a id="note-pdf-open" href="#" target="_blank" rel="noopener">Open in new tab</a></p>
+                </div>
+                <label for="note-body" id="note-body-label">Notes</label>
                 <textarea id="note-body" placeholder="Lecture summary, formulas, reminders…"></textarea>
                 <p class="hint" id="note-meta"></p>
+                <p class="hint note-stats-line" id="note-stats" hidden></p>
                 <div class="editor-actions">
+                  <button type="button" class="btn-muted" id="btn-pin-note" title="Keep this note at the top of the list" hidden>Pin</button>
                   <button type="button" class="btn-primary" id="btn-save-note">Save</button>
                   <span class="kbd" title="Shortcut">Ctrl/⌘ + S</span>
+                  <button type="button" class="btn-muted" id="btn-download-pdf" title="Download the PDF file" hidden>Download PDF</button>
                   <button type="button" class="btn-ghost" id="btn-delete-note">Delete</button>
                 </div>
               </div>
@@ -1152,6 +1241,14 @@
     const noteTitle = document.getElementById("note-title");
     const noteBody = document.getElementById("note-body");
     const noteMeta = document.getElementById("note-meta");
+    const notePdfWrap = document.getElementById("note-pdf-wrap");
+    const notePdfFrame = document.getElementById("note-pdf-frame");
+    const notePdfOpen = document.getElementById("note-pdf-open");
+    const noteBodyLabel = document.getElementById("note-body-label");
+    const noteStats = document.getElementById("note-stats");
+    const btnPinNote = document.getElementById("btn-pin-note");
+    const btnDownloadPdf = document.getElementById("btn-download-pdf");
+    const noteSort = document.getElementById("note-sort");
     const btnNew = document.getElementById("btn-new-note");
     const btnSave = document.getElementById("btn-save-note");
     const btnDelete = document.getElementById("btn-delete-note");
@@ -1254,6 +1351,7 @@
 
     async function apiForm(path, formData) {
       const res = await fetch(path, {
+        method: "POST",
         credentials: "same-origin",
         headers: { Accept: "application/json" },
         body: formData,
@@ -1276,28 +1374,108 @@
     function noteFilterOk(n) {
       var q = (noteSearch && noteSearch.value) ? noteSearch.value.trim().toLowerCase() : "";
       if (!q) return true;
-      var blob = ((n.title || "") + " " + (n.body || "")).toLowerCase();
+      var blob = ((n.title || "") + " " + (n.body || "") + " " + (n.pdf_filename || "")).toLowerCase();
       return blob.indexOf(q) !== -1;
+    }
+
+    function sortNotesArray(arr) {
+      var mode = (noteSort && noteSort.value) ? noteSort.value : "pinned";
+      var copy = arr.slice();
+      if (mode === "title") {
+        copy.sort(function (a, b) {
+          return (a.title || "").localeCompare(b.title || "", undefined, { sensitivity: "base" });
+        });
+      } else if (mode === "recent") {
+        copy.sort(function (a, b) {
+          return (b.updated_at || "").localeCompare(a.updated_at || "");
+        });
+      } else {
+        copy.sort(function (a, b) {
+          var ap = a.pinned ? 1 : 0;
+          var bp = b.pinned ? 1 : 0;
+          if (bp !== ap) return bp - ap;
+          return (b.updated_at || "").localeCompare(a.updated_at || "");
+        });
+      }
+      return copy;
+    }
+
+    function formatRelativeTime(iso) {
+      if (!iso) return "";
+      try {
+        var norm = iso.indexOf("T") >= 0 ? iso : iso.replace(" ", "T");
+        if (norm.indexOf("Z") === -1 && norm.indexOf("+") === -1 && norm.indexOf("-", 10) === -1) norm += "Z";
+        var d = new Date(norm);
+        if (isNaN(d.getTime())) return "";
+        var sec = Math.round((Date.now() - d.getTime()) / 1000);
+        if (sec < 45) return "just now";
+        if (sec < 3600) return Math.floor(sec / 60) + " min ago";
+        if (sec < 86400) return Math.floor(sec / 3600) + " h ago";
+        if (sec < 604800) return Math.floor(sec / 86400) + " d ago";
+        return Math.floor(sec / 604800) + " wk ago";
+      } catch (e) {
+        return "";
+      }
+    }
+
+    function noteMetaLine(iso, created) {
+      var t = iso || created;
+      if (!t) return "";
+      try {
+        var norm = t.indexOf("T") >= 0 ? t : t.replace(" ", "T");
+        if (norm.indexOf("Z") === -1 && norm.indexOf("+") === -1 && norm.indexOf("-", 10) === -1) norm += "Z";
+        var d = new Date(norm);
+        var rel = formatRelativeTime(iso || created);
+        var abs = isNaN(d.getTime()) ? t : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+        return "Updated " + rel + " · " + abs;
+      } catch (e) {
+        return "Last updated: " + t;
+      }
+    }
+
+    function updateEditorStats() {
+      if (!noteStats || editor.hidden) return;
+      var t = noteBody ? noteBody.value : "";
+      var words = t.replace(/^\s+|\s+$/g, "") ? t.trim().split(/\s+/).length : 0;
+      var chars = t.length;
+      noteStats.textContent = words + " words · " + chars + " characters";
+      noteStats.hidden = false;
     }
 
     function renderNotes() {
       noteList.innerHTML = "";
-      var i = 0;
-      notes.forEach(function (n) {
+      var shown = 0;
+      var sorted = sortNotesArray(notes);
+      sorted.forEach(function (n) {
         if (!noteFilterOk(n)) return;
+        shown++;
         const li = document.createElement("li");
-        li.style.animationDelay = (i * 0.03) + "s";
-        i++;
+        li.style.animationDelay = ((shown - 1) * 0.03) + "s";
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "note-item" + (currentId === n.id && !isNew ? " active" : "");
-        const preview = (n.body || "").trim().replace(/\s+/g, " ").slice(0, 72);
-        btn.innerHTML = "<strong>" + escapeHtml(n.title || "Untitled") + "</strong>" +
-          "<span>" + escapeHtml(preview || "Empty note") + "</span>";
+        var preview = (n.body || "").trim().replace(/\s+/g, " ").slice(0, 72);
+        var sub = preview || "Empty note";
+        if (n.has_pdf) {
+          sub = (n.pdf_filename || "PDF") + (preview ? " · " + preview : "");
+        }
+        var pinMark = n.pinned ? "<span class=\"note-pin-star\" aria-hidden=\"true\">★</span>" : "";
+        var badge = n.has_pdf ? "<span class=\"note-pdf-badge\">PDF</span> " : "";
+        btn.innerHTML = pinMark + badge + "<strong>" + escapeHtml(n.title || "Untitled") + "</strong>" +
+          "<span>" + escapeHtml(sub) + "</span>";
         btn.addEventListener("click", function () { openNote(n.id); });
         li.appendChild(btn);
         noteList.appendChild(li);
       });
+      if (shown === 0) {
+        var emptyLi = document.createElement("li");
+        emptyLi.className = "hint";
+        emptyLi.style.padding = "1rem 1.1rem";
+        emptyLi.textContent = notes.length === 0
+          ? "No notes yet — create one or import a file."
+          : "No notes match your filter.";
+        noteList.appendChild(emptyLi);
+      }
     }
 
     function openNote(id) {
@@ -1309,7 +1487,27 @@
       editor.hidden = false;
       noteTitle.value = n.title;
       noteBody.value = n.body;
-      noteMeta.textContent = "Last updated: " + (n.updated_at || n.created_at || "");
+      noteMeta.textContent = noteMetaLine(n.updated_at, n.created_at);
+      updateEditorStats();
+      if (btnPinNote) {
+        btnPinNote.hidden = false;
+        btnPinNote.textContent = n.pinned ? "Unpin" : "Pin";
+        btnPinNote.setAttribute("aria-pressed", n.pinned ? "true" : "false");
+        btnPinNote.classList.toggle("btn-pin-active", !!n.pinned);
+      }
+      if (btnDownloadPdf) btnDownloadPdf.hidden = !n.has_pdf;
+      if (n.has_pdf && notePdfWrap && notePdfFrame && notePdfOpen) {
+        notePdfWrap.hidden = false;
+        var pdfUrl = "/api/notes/" + n.id + "/pdf";
+        notePdfFrame.src = pdfUrl;
+        notePdfOpen.href = pdfUrl;
+        if (noteBodyLabel) noteBodyLabel.textContent = "Notes (optional)";
+      } else {
+        if (notePdfWrap) notePdfWrap.hidden = true;
+        if (notePdfFrame) notePdfFrame.src = "about:blank";
+        if (noteBodyLabel) noteBodyLabel.textContent = "Notes";
+        if (btnDownloadPdf) btnDownloadPdf.hidden = true;
+      }
       renderNotes();
     }
 
@@ -1321,6 +1519,12 @@
       noteTitle.value = "";
       noteBody.value = "";
       noteMeta.textContent = "New note — click Save or press Ctrl/⌘ + S.";
+      if (noteStats) { noteStats.textContent = ""; noteStats.hidden = true; }
+      if (btnPinNote) { btnPinNote.hidden = true; btnPinNote.classList.remove("btn-pin-active"); }
+      if (btnDownloadPdf) btnDownloadPdf.hidden = true;
+      if (notePdfWrap) notePdfWrap.hidden = true;
+      if (notePdfFrame) notePdfFrame.src = "about:blank";
+      if (noteBodyLabel) noteBodyLabel.textContent = "Notes";
       renderNotes();
       noteTitle.focus();
     }
@@ -1362,10 +1566,51 @@
       });
       const i = notes.findIndex(function (n) { return n.id === currentId; });
       if (i >= 0) notes[i] = updated;
-      notes.sort(function (a, b) { return (b.updated_at || "").localeCompare(a.updated_at || ""); });
       openNote(currentId);
       renderNotes();
+      updateEditorStats();
       toast("Saved");
+    }
+
+    async function togglePinNote() {
+      if (isNew || currentId == null) return;
+      var n = notes.find(function (x) { return x.id === currentId; });
+      if (!n) return;
+      clearErr();
+      var next = !n.pinned;
+      await api("/api/notes/" + currentId, {
+        method: "PATCH",
+        body: JSON.stringify({ pinned: next }),
+      });
+      await loadNotes();
+      openNote(currentId);
+      toast(next ? "Pinned" : "Unpinned");
+    }
+
+    async function downloadCurrentNotePdf() {
+      if (currentId == null) return;
+      var n = notes.find(function (x) { return x.id === currentId; });
+      if (!n || !n.has_pdf) return;
+      try {
+        var res = await fetch("/api/notes/" + currentId + "/pdf?download=1", { credentials: "same-origin" });
+        if (res.status === 401) {
+          window.location.reload();
+          return;
+        }
+        if (!res.ok) throw new Error("Download failed");
+        var blob = await res.blob();
+        var fn = (n.pdf_filename || "document.pdf").replace(/[\\/:*?"<>|]/g, "_");
+        var a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = fn;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+        toast("PDF downloaded");
+      } catch (err) {
+        showErr(err.message || "Could not download PDF");
+      }
     }
 
     async function deleteNote() {
@@ -1744,6 +1989,26 @@
     if (noteSearch) {
       noteSearch.addEventListener("input", function () { renderNotes(); });
     }
+
+    try {
+      var savedSort = localStorage.getItem("desk-note-sort");
+      if (savedSort && noteSort && ["pinned", "recent", "title"].indexOf(savedSort) >= 0) {
+        noteSort.value = savedSort;
+      }
+    } catch (e) { /* ignore */ }
+
+    if (noteSort) {
+      noteSort.addEventListener("change", function () {
+        try { localStorage.setItem("desk-note-sort", noteSort.value); } catch (e) { /* ignore */ }
+        renderNotes();
+      });
+    }
+
+    if (noteBody) noteBody.addEventListener("input", updateEditorStats);
+    if (noteTitle) noteTitle.addEventListener("input", updateEditorStats);
+
+    if (btnPinNote) btnPinNote.addEventListener("click", function () { togglePinNote().catch(function (e) { showErr(e.message); }); });
+    if (btnDownloadPdf) btnDownloadPdf.addEventListener("click", function () { downloadCurrentNotePdf(); });
 
     document.addEventListener("keydown", function (e) {
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "s") return;

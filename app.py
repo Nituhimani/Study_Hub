@@ -6,14 +6,13 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
-from io import BytesIO
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, g, jsonify, redirect, render_template, request, session
-from pypdf import PdfReader
+from flask import Flask, Response, g, jsonify, redirect, render_template, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -29,14 +28,8 @@ def _title_from_upload_filename(name: str) -> str:
     return (base.strip() or "Imported")[:500]
 
 
-def _pdf_extract_text(data: bytes) -> str:
-    reader = PdfReader(BytesIO(data))
-    parts: list[str] = []
-    for page in reader.pages:
-        t = page.extract_text()
-        if t:
-            parts.append(t)
-    return "\n\n".join(parts).strip()
+def _is_pdf_bytes(data: bytes) -> bool:
+    return len(data) >= 4 and data.startswith(b"%PDF")
 
 
 def _env_clean(name: str) -> str | None:
@@ -208,6 +201,9 @@ def init_db() -> None:
                 body TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                pdf_data BLOB,
+                pdf_filename TEXT,
+                pinned INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
             """
@@ -216,6 +212,13 @@ def init_db() -> None:
         if "user_id" not in have_notes:
             conn.execute("ALTER TABLE notes ADD COLUMN user_id INTEGER REFERENCES users(id)")
         conn.execute("DELETE FROM notes WHERE user_id IS NULL")
+        ncols = _table_columns(conn, "notes")
+        if "pdf_data" not in ncols:
+            conn.execute("ALTER TABLE notes ADD COLUMN pdf_data BLOB")
+        if "pdf_filename" not in ncols:
+            conn.execute("ALTER TABLE notes ADD COLUMN pdf_filename TEXT")
+        if "pinned" not in ncols:
+            conn.execute("ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
 
     have_todos = _table_columns(conn, "todos")
     if not have_todos:
@@ -263,13 +266,41 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 
 def row_note(r: sqlite3.Row) -> dict:
+    keys = set(r.keys())
+    if "has_pdf" in keys:
+        has_pdf = bool(r["has_pdf"])
+    elif "pdf_data" in keys:
+        has_pdf = r["pdf_data"] is not None
+    else:
+        has_pdf = False
+    pdf_filename = None
+    if has_pdf:
+        if "pdf_filename" in keys:
+            pdf_filename = (r["pdf_filename"] or "").strip() or "document.pdf"
+        else:
+            pdf_filename = "document.pdf"
+    pinned = bool(r["pinned"]) if "pinned" in keys else False
     return {
         "id": r["id"],
         "title": r["title"],
         "body": r["body"],
         "created_at": r["created_at"],
         "updated_at": r["updated_at"],
+        "has_pdf": has_pdf,
+        "pdf_filename": pdf_filename,
+        "pinned": pinned,
     }
+
+
+_NOTE_LIST_SQL = """
+    SELECT id, title, body, created_at, updated_at, pdf_filename, pinned,
+           (pdf_data IS NOT NULL) AS has_pdf
+    FROM notes
+"""
+
+
+def _note_row_sql(where: str) -> str:
+    return _NOTE_LIST_SQL.strip() + " " + where
 
 
 def row_todo(r: sqlite3.Row) -> dict:
@@ -609,11 +640,7 @@ def productivity():
 def list_notes():
     conn = db()
     rows = conn.execute(
-        """
-        SELECT id, title, body, created_at, updated_at FROM notes
-        WHERE user_id = ?
-        ORDER BY updated_at DESC
-        """,
+        _note_row_sql("WHERE user_id = ? ORDER BY updated_at DESC"),
         (g.user_id,),
     ).fetchall()
     conn.close()
@@ -630,14 +657,14 @@ def create_note():
     conn = db()
     cur = conn.execute(
         """
-        INSERT INTO notes (user_id, title, body, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO notes (user_id, title, body, created_at, updated_at, pinned)
+        VALUES (?, ?, ?, ?, ?, 0)
         """,
         (g.user_id, title, body, now, now),
     )
     nid = cur.lastrowid
     row = conn.execute(
-        "SELECT id, title, body, created_at, updated_at FROM notes WHERE id = ? AND user_id = ?",
+        _note_row_sql("WHERE id = ? AND user_id = ?"),
         (nid, g.user_id),
     ).fetchone()
     conn.commit()
@@ -656,30 +683,24 @@ def import_note_pdf():
         return jsonify({"error": "PDF too large (max 12 MB)."}), 400
     if not f.filename.lower().endswith(".pdf"):
         return jsonify({"error": "Upload a .pdf file."}), 400
-    try:
-        body = _pdf_extract_text(raw)
-    except Exception as e:
-        return jsonify({"error": f"Could not read PDF ({e!s})."}), 400
-    if not body:
-        return jsonify(
-            {
-                "error": "No text found in this PDF. Scanned pages (images only) are not converted.",
-            }
-        ), 400
+    if not _is_pdf_bytes(raw):
+        return jsonify({"error": "Not a valid PDF file."}), 400
     title = _title_from_upload_filename(f.filename)
-    body = body[:100_000]
+    safe_fn = secure_filename(f.filename) or "document.pdf"
+    if not safe_fn.lower().endswith(".pdf"):
+        safe_fn = safe_fn + ".pdf"
     now = utc_now()
     conn = db()
     cur = conn.execute(
         """
-        INSERT INTO notes (user_id, title, body, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO notes (user_id, title, body, created_at, updated_at, pdf_data, pdf_filename, pinned)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
         """,
-        (g.user_id, title, body, now, now),
+        (g.user_id, title, "", now, now, raw, safe_fn),
     )
     nid = cur.lastrowid
     row = conn.execute(
-        "SELECT id, title, body, created_at, updated_at FROM notes WHERE id = ? AND user_id = ?",
+        _note_row_sql("WHERE id = ? AND user_id = ?"),
         (nid, g.user_id),
     ).fetchone()
     conn.commit()
@@ -687,12 +708,38 @@ def import_note_pdf():
     return jsonify(row_note(row)), 201
 
 
+@app.route("/api/notes/<int:nid>/pdf", methods=["GET"])
+@login_required
+def serve_note_pdf(nid: int):
+    conn = db()
+    row = conn.execute(
+        "SELECT pdf_data, pdf_filename FROM notes WHERE id = ? AND user_id = ?",
+        (nid, g.user_id),
+    ).fetchone()
+    conn.close()
+    if not row or row["pdf_data"] is None:
+        return jsonify({"error": "not found"}), 404
+    fn = secure_filename(row["pdf_filename"] or "") or "document.pdf"
+    if not fn.lower().endswith(".pdf"):
+        fn = fn + ".pdf"
+    as_attachment = request.args.get("download") in ("1", "true", "yes")
+    disp = "attachment" if as_attachment else "inline"
+    return Response(
+        row["pdf_data"],
+        mimetype="application/pdf",
+        headers={
+            "Content-Disposition": f'{disp}; filename="{fn}"',
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
+
 @app.route("/api/notes/<int:nid>", methods=["GET"])
 @login_required
 def get_note(nid: int):
     conn = db()
     row = conn.execute(
-        "SELECT id, title, body, created_at, updated_at FROM notes WHERE id = ? AND user_id = ?",
+        _note_row_sql("WHERE id = ? AND user_id = ?"),
         (nid, g.user_id),
     ).fetchone()
     conn.close()
@@ -720,6 +767,9 @@ def update_note(nid: int):
     if "body" in data:
         fields.append("body = ?")
         vals.append((data.get("body") or "").strip()[:100_000])
+    if "pinned" in data:
+        fields.append("pinned = ?")
+        vals.append(1 if data.get("pinned") else 0)
     if fields:
         fields.append("updated_at = ?")
         vals.append(utc_now())
@@ -730,7 +780,7 @@ def update_note(nid: int):
         )
         conn.commit()
     row = conn.execute(
-        "SELECT id, title, body, created_at, updated_at FROM notes WHERE id = ? AND user_id = ?",
+        _note_row_sql("WHERE id = ? AND user_id = ?"),
         (nid, g.user_id),
     ).fetchone()
     conn.close()
