@@ -593,69 +593,6 @@
       border: 1px solid rgba(196, 28, 28, 0.25);
     }
 
-    .prod-wrap { margin-bottom: 1.35rem; }
-    .prod-wrap .card:hover { transform: none; box-shadow: var(--shadow); }
-
-    .prod-head {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 0.5rem;
-      margin-bottom: 0.65rem;
-    }
-
-    .prod-head h2 {
-      margin: 0;
-      font-size: 1.02rem;
-      font-weight: 700;
-    }
-
-    .prod-head .propill {
-      font-size: 0.76rem;
-      color: var(--muted);
-      background: var(--surface2);
-      padding: 0.22rem 0.55rem;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-    }
-
-    .prod-note {
-      font-size: 0.8rem;
-      color: var(--muted);
-      margin: 0 0 0.85rem;
-    }
-
-    .prod-row {
-      display: grid;
-      grid-template-columns: 88px 1fr 44px;
-      gap: 0.55rem;
-      align-items: center;
-      font-size: 0.78rem;
-      margin-bottom: 0.4rem;
-      opacity: 0;
-      animation: fade-rise 0.4s ease-out forwards;
-    }
-
-    .prod-bar {
-      height: 9px;
-      background: var(--surface2);
-      border-radius: 99px;
-      overflow: hidden;
-      border: 1px solid var(--line);
-    }
-
-    .prod-fill {
-      height: 100%;
-      border-radius: 99px;
-      background: linear-gradient(90deg, var(--accent), #8b5cf6, var(--success));
-      width: 0;
-      max-width: 100%;
-      transition: width 0.75s cubic-bezier(0.22, 1, 0.36, 1);
-    }
-
-    .prod-meta { color: var(--muted); text-align: right; font-weight: 600; }
-
     #toasts {
       position: fixed;
       bottom: 1.25rem;
@@ -997,7 +934,7 @@
     <header class="top">
       <div class="titles">
         <h1>Student Desk</h1>
-        <p>Your data is tied to <strong>your username</strong> in <code>student_desk.db</code> on this machine. Productivity (from your to-dos) is saved day by day in UTC when you use the app.</p>
+        <p>Your notes and to-dos are stored in <code>student_desk.db</code> on this device for your signed-in account.</p>
       </div>
       <div class="user-bar">
         <div class="toolbar-actions">
@@ -1018,17 +955,6 @@
 
     <div id="desk-panel" class="sheet-panel active" role="tabpanel" aria-labelledby="tab-app-desk">
 
-    <section class="card prod-wrap" id="productivity-card">
-      <div class="card-b">
-        <div class="prod-head">
-          <h2>Daily productivity (from to-dos)</h2>
-          <span class="propill" id="prod-summary"></span>
-        </div>
-        <p class="prod-note">Score = tasks completed that UTC day ÷ tasks that counted for that day (created on or before that day, still open at the start of the day or completed that day). Days with no tasks are skipped.</p>
-        <div id="prod-chart" aria-label="Productivity by day"></div>
-      </div>
-    </section>
-
     <div class="layout">
       <div class="notes-col">
         <div class="card">
@@ -1036,6 +962,8 @@
             <h2>Notes</h2>
             <div class="card-h-tools">
               <input type="search" id="note-search" class="search-notes" placeholder="Filter notes…" autocomplete="off" />
+              <input type="file" id="note-file-import" accept=".txt,.md,text/plain,text/markdown" hidden />
+              <button type="button" class="btn-muted" id="btn-import-note" title="Create a new note from a .txt or .md file on your computer">Import file</button>
               <button type="button" class="btn-primary" id="btn-new-note">New note</button>
             </div>
           </div>
@@ -1108,7 +1036,7 @@
 
         <div class="hub-card hub-intention">
           <h3>Today’s intention</h3>
-          <textarea id="focus-intention" maxlength="4000" placeholder="One honest sentence: what matters most today? (saved with your username)"></textarea>
+          <textarea id="focus-intention" maxlength="4000" placeholder="One honest sentence: what matters most today? (saved to your account)"></textarea>
           <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.65rem;align-items:center">
             <button type="button" class="btn-hub-primary" id="btn-save-intention">Save intention</button>
             <span class="hint" id="intention-saved-at" style="margin:0"></span>
@@ -1167,8 +1095,8 @@
     const btnAddTodo = document.getElementById("btn-add-todo");
     const displayName = document.getElementById("display-name");
     const displayMeta = document.getElementById("display-meta");
-    const prodSummary = document.getElementById("prod-summary");
-    const prodChart = document.getElementById("prod-chart");
+    const noteFileImport = document.getElementById("note-file-import");
+    const btnImportNote = document.getElementById("btn-import-note");
     const toasts = document.getElementById("toasts");
     const themeGate = document.getElementById("theme-gate");
     const themeMain = document.getElementById("theme-main");
@@ -1405,7 +1333,6 @@
       clearErr();
       await api("/api/todos/" + id, { method: "PATCH", body: JSON.stringify({ done }) });
       await loadTodos();
-      await loadProductivity();
     }
 
     async function removeTodo(id) {
@@ -1424,7 +1351,6 @@
       clearErr();
       await api("/api/todos/clear-done", { method: "POST" });
       await loadTodos();
-      await loadProductivity();
       toast("Completed tasks cleared");
     }
 
@@ -1445,49 +1371,37 @@
         .replace(/"/g, "&quot;");
     }
 
-    function renderProductivity(data) {
-      const rows = (data && data.days) || [];
-      prodChart.innerHTML = "";
-      if (!rows.length) {
-        prodSummary.textContent = "No closed days yet — check back after UTC midnight.";
-        return;
-      }
-      const last = rows[rows.length - 1];
-      prodSummary.textContent = "Latest: " + last.day + " — " + last.score + "% · " +
-        last.tasks_completed + "/" + last.tasks_active + " tasks";
-
-      rows.slice().reverse().slice(0, 14).forEach(function (r, idx) {
-        const row = document.createElement("div");
-        row.className = "prod-row";
-        row.style.animationDelay = (0.08 + idx * 0.05) + "s";
-        const d = document.createElement("div");
-        d.textContent = r.day.slice(5);
-        const barWrap = document.createElement("div");
-        barWrap.className = "prod-bar";
-        const fill = document.createElement("div");
-        fill.className = "prod-fill";
-        var pct = Math.max(4, r.score);
-        requestAnimationFrame(function () {
-          fill.style.width = pct + "%";
-        });
-        barWrap.appendChild(fill);
-        const m = document.createElement("div");
-        m.className = "prod-meta";
-        m.textContent = r.score + "%";
-        row.appendChild(d);
-        row.appendChild(barWrap);
-        row.appendChild(m);
-        prodChart.appendChild(row);
-      });
+    function titleFromImportedFile(name) {
+      var n = String(name || "").replace(/^.*[/\\]/, "");
+      var dot = n.lastIndexOf(".");
+      if (dot > 0) n = n.slice(0, dot);
+      n = n.trim();
+      return n || "Imported";
     }
 
-    async function loadProductivity() {
-      try {
-        const data = await api("/api/productivity?days=30");
-        renderProductivity(data);
-      } catch (e) {
-        prodSummary.textContent = "";
+    async function importNoteFromFile(file) {
+      if (!file) return;
+      if (file.size > 120000) {
+        toast("File is too large (try under ~100KB of text)");
+        return;
       }
+      const text = await new Promise(function (resolve, reject) {
+        var r = new FileReader();
+        r.onload = function () { resolve(String(r.result || "")); };
+        r.onerror = function () { reject(new Error("Could not read file")); };
+        r.readAsText(file);
+      });
+      clearErr();
+      var title = titleFromImportedFile(file.name);
+      const created = await api("/api/notes", {
+        method: "POST",
+        body: JSON.stringify({ title: title.slice(0, 500), body: text.slice(0, 100000) }),
+      });
+      isNew = false;
+      currentId = created.id;
+      await loadNotes();
+      openNote(currentId);
+      toast("Imported: " + (file.name || "file"));
     }
 
     function showAppTab(which) {
@@ -1662,7 +1576,7 @@
 
       showAppTab("desk");
       try {
-        await Promise.all([loadNotes(), loadTodos(), loadProductivity(), loadPrefs()]);
+        await Promise.all([loadNotes(), loadTodos(), loadPrefs()]);
       } catch (e) {
         showErr(e.message || "Load failed");
       }
@@ -1678,6 +1592,15 @@
       e.preventDefault();
       saveNote().catch(function (err) { showErr(err.message); });
     });
+
+    if (btnImportNote && noteFileImport) {
+      btnImportNote.addEventListener("click", function () { noteFileImport.click(); });
+      noteFileImport.addEventListener("change", function () {
+        var f = noteFileImport.files && noteFileImport.files[0];
+        noteFileImport.value = "";
+        if (f) importNoteFromFile(f).catch(function (err) { showErr(err.message); });
+      });
+    }
 
     btnNew.addEventListener("click", startNewNote);
     btnSave.addEventListener("click", function () { saveNote().catch(function (e) { showErr(e.message); }); });

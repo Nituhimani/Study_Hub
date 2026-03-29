@@ -1,12 +1,12 @@
 """
-Student desk — notes, to-dos, productivity per account (username + password, SQLite).
+Student desk — notes, to-dos per account (username + password, SQLite).
 """
 from __future__ import annotations
 
 import os
 import re
 import sqlite3
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 
@@ -142,21 +142,6 @@ def init_db() -> None:
             if "password_hash" not in ucols:
                 conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS productivity_daily (
-            user_id INTEGER NOT NULL,
-            day TEXT NOT NULL,
-            score INTEGER NOT NULL,
-            tasks_completed INTEGER NOT NULL,
-            tasks_active INTEGER NOT NULL,
-            computed_at TEXT NOT NULL,
-            PRIMARY KEY (user_id, day),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-        """
-    )
-
     have_notes = _table_columns(conn, "notes")
     if not have_notes:
         conn.execute(
@@ -211,6 +196,8 @@ def init_db() -> None:
         """
     )
 
+    conn.execute("DROP TABLE IF EXISTS productivity_daily")
+
     conn.commit()
     conn.close()
 
@@ -243,86 +230,6 @@ def row_todo(r: sqlite3.Row) -> dict:
     }
 
 
-def _compute_day_score(conn: sqlite3.Connection, user_id: int, d: date) -> tuple[int, int, int] | None:
-    day_s = d.isoformat()
-    end_d = f"{day_s} 23:59:59"
-    start_d = f"{day_s} 00:00:00"
-
-    active = conn.execute(
-        """
-        SELECT COUNT(*) AS c FROM todos
-        WHERE user_id = ?
-          AND created_at <= ?
-          AND (completed_at IS NULL OR datetime(completed_at) >= datetime(?))
-        """,
-        (user_id, end_d, start_d),
-    ).fetchone()["c"]
-
-    if active == 0:
-        return None
-
-    done_today = conn.execute(
-        """
-        SELECT COUNT(*) AS c FROM todos
-        WHERE user_id = ?
-          AND completed_at IS NOT NULL
-          AND date(completed_at) = ?
-        """,
-        (user_id, day_s),
-    ).fetchone()["c"]
-
-    score = int(round(100 * min(done_today, active) / max(active, 1)))
-    score = max(0, min(100, score))
-    return score, done_today, active
-
-
-def _finalize_productivity(conn: sqlite3.Connection, user_id: int) -> None:
-    u = conn.execute(
-        "SELECT created_at, last_productivity_day FROM users WHERE id = ?",
-        (user_id,),
-    ).fetchone()
-    if not u:
-        return
-
-    join_day = date.fromisoformat(str(u["created_at"])[:10])
-    today = datetime.now(timezone.utc).date()
-    yesterday = today - timedelta(days=1)
-    if yesterday < join_day:
-        return
-
-    last = u["last_productivity_day"]
-    if last:
-        start = date.fromisoformat(last) + timedelta(days=1)
-    else:
-        start = join_day
-
-    if start > yesterday:
-        return
-
-    now = utc_now()
-    d = start
-    guard = 0
-    while d <= yesterday and guard < 500:
-        guard += 1
-        res = _compute_day_score(conn, user_id, d)
-        day_str = d.isoformat()
-        if res is not None:
-            score, done_n, active_n = res
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO productivity_daily
-                (user_id, day, score, tasks_completed, tasks_active, computed_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (user_id, day_str, score, done_n, active_n, now),
-            )
-        conn.execute(
-            "UPDATE users SET last_productivity_day = ? WHERE id = ?",
-            (day_str, user_id),
-        )
-        d += timedelta(days=1)
-
-
 def login_required(f):
     @wraps(f)
     def wrapped(*args, **kwargs):
@@ -330,12 +237,6 @@ def login_required(f):
         if not uid:
             return jsonify({"error": "unauthorized"}), 401
         g.user_id = uid
-        conn = db()
-        try:
-            _finalize_productivity(conn, uid)
-            conn.commit()
-        finally:
-            conn.close()
         return f(*args, **kwargs)
 
     return wrapped
@@ -469,8 +370,6 @@ def me():
         return jsonify({"logged_in": False})
     conn = db()
     try:
-        _finalize_productivity(conn, uid)
-        conn.commit()
         u = conn.execute(
             "SELECT id, display_name, name_key, created_at FROM users WHERE id = ?",
             (uid,),
@@ -529,39 +428,6 @@ def patch_prefs():
     conn.commit()
     conn.close()
     return jsonify({"focus_intention": intention, "updated_at": now})
-
-
-@app.route("/api/productivity", methods=["GET"])
-@login_required
-def productivity():
-    days = request.args.get("days", default="30", type=int)
-    days = max(1, min(days, 90))
-    since = (datetime.now(timezone.utc).date() - timedelta(days=days - 1)).isoformat()
-    conn = db()
-    rows = conn.execute(
-        """
-        SELECT day, score, tasks_completed, tasks_active, computed_at
-        FROM productivity_daily
-        WHERE user_id = ? AND day >= ?
-        ORDER BY day ASC
-        """,
-        (g.user_id, since),
-    ).fetchall()
-    conn.close()
-    return jsonify(
-        {
-            "days": [
-                {
-                    "day": r["day"],
-                    "score": r["score"],
-                    "tasks_completed": r["tasks_completed"],
-                    "tasks_active": r["tasks_active"],
-                    "computed_at": r["computed_at"],
-                }
-                for r in rows
-            ]
-        }
-    )
 
 
 @app.route("/api/notes", methods=["GET"])
