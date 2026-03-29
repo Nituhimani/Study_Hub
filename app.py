@@ -6,14 +6,37 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from io import BytesIO
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
 from flask import Flask, g, jsonify, redirect, render_template, request, session
+from pypdf import PdfReader
 from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
+
+MAX_PDF_IMPORT_BYTES = 12 * 1024 * 1024
+
+
+def _title_from_upload_filename(name: str) -> str:
+    base = (name or "").replace("\\", "/").split("/")[-1].strip()
+    for ext in (".pdf", ".txt", ".md"):
+        if base.lower().endswith(ext):
+            base = base[: -len(ext)]
+            break
+    return (base.strip() or "Imported")[:500]
+
+
+def _pdf_extract_text(data: bytes) -> str:
+    reader = PdfReader(BytesIO(data))
+    parts: list[str] = []
+    for page in reader.pages:
+        t = page.extract_text()
+        if t:
+            parts.append(t)
+    return "\n\n".join(parts).strip()
 
 
 def _env_clean(name: str) -> str | None:
@@ -603,6 +626,48 @@ def create_note():
     data = request.get_json(silent=True) or {}
     title = (data.get("title") or "Untitled").strip()[:500]
     body = (data.get("body") or "").strip()[:100_000]
+    now = utc_now()
+    conn = db()
+    cur = conn.execute(
+        """
+        INSERT INTO notes (user_id, title, body, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (g.user_id, title, body, now, now),
+    )
+    nid = cur.lastrowid
+    row = conn.execute(
+        "SELECT id, title, body, created_at, updated_at FROM notes WHERE id = ? AND user_id = ?",
+        (nid, g.user_id),
+    ).fetchone()
+    conn.commit()
+    conn.close()
+    return jsonify(row_note(row)), 201
+
+
+@app.route("/api/notes/import-pdf", methods=["POST"])
+@login_required
+def import_note_pdf():
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "file required"}), 400
+    raw = f.read()
+    if len(raw) > MAX_PDF_IMPORT_BYTES:
+        return jsonify({"error": "PDF too large (max 12 MB)."}), 400
+    if not f.filename.lower().endswith(".pdf"):
+        return jsonify({"error": "Upload a .pdf file."}), 400
+    try:
+        body = _pdf_extract_text(raw)
+    except Exception as e:
+        return jsonify({"error": f"Could not read PDF ({e!s})."}), 400
+    if not body:
+        return jsonify(
+            {
+                "error": "No text found in this PDF. Scanned pages (images only) are not converted.",
+            }
+        ), 400
+    title = _title_from_upload_filename(f.filename)
+    body = body[:100_000]
     now = utc_now()
     conn = db()
     cur = conn.execute(

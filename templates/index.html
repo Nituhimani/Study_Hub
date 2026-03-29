@@ -1028,8 +1028,8 @@
             <h2>Notes</h2>
             <div class="card-h-tools">
               <input type="search" id="note-search" class="search-notes" placeholder="Filter notes…" autocomplete="off" />
-              <input type="file" id="note-file-import" accept=".txt,.md,text/plain,text/markdown" hidden />
-              <button type="button" class="btn-muted" id="btn-import-note" title="Create a new note from a .txt or .md file on your computer">Import file</button>
+              <input type="file" id="note-file-import" accept=".txt,.md,.pdf,text/plain,text/markdown,application/pdf" hidden />
+              <button type="button" class="btn-muted" id="btn-import-note" title="Create a new note from .txt, .md, or .pdf on your computer">Import file</button>
               <button type="button" class="btn-primary" id="btn-new-note">New note</button>
             </div>
           </div>
@@ -1249,6 +1249,27 @@
         throw new Error(detail || "Request failed");
       }
       if (res.status === 204) return null;
+      return res.json();
+    }
+
+    async function apiForm(path, formData) {
+      const res = await fetch(path, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+        body: formData,
+      });
+      if (res.status === 401) {
+        window.location.reload();
+        throw new Error("Session expired — sign in again.");
+      }
+      if (!res.ok) {
+        let detail = res.statusText;
+        try {
+          const j = await res.json();
+          if (j.error) detail = j.error;
+        } catch (e) { /* ignore */ }
+        throw new Error(detail || "Request failed");
+      }
       return res.json();
     }
 
@@ -1496,8 +1517,29 @@
       }
     }
 
+    function isPdfFile(file) {
+      var n = (file.name || "").toLowerCase();
+      return n.endsWith(".pdf") || file.type === "application/pdf";
+    }
+
     async function importNoteFromFile(file) {
       if (!file) return;
+      if (isPdfFile(file)) {
+        if (file.size > 12 * 1024 * 1024) {
+          toast("PDF is too large (max 12 MB)");
+          return;
+        }
+        clearErr();
+        var fd = new FormData();
+        fd.append("file", file);
+        const created = await apiForm("/api/notes/import-pdf", fd);
+        isNew = false;
+        currentId = created.id;
+        await loadNotes();
+        openNote(currentId);
+        toast("Imported: " + (file.name || "PDF"));
+        return;
+      }
       if (file.size > 120000) {
         toast("File is too large (try under ~100KB of text)");
         return;
