@@ -11,10 +11,11 @@ services:
     plan: free
     region: oregon
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 app:app
+    # Single worker: SQLite file handles are safer without multi-process contention on free tier.
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 app:app
     envVars:
       - key: PYTHON_VERSION
-        value: "3.12.8"
+        value: "3.11.11"
       # Required in production: generate in Render UI or: openssl rand -hex 32
       - key: SECRET_KEY
         sync: false

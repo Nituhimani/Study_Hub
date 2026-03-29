@@ -593,6 +593,63 @@
       border: 1px solid rgba(196, 28, 28, 0.25);
     }
 
+    .prod-wrap { margin-bottom: 1.35rem; }
+    .prod-wrap .card:hover { transform: none; box-shadow: var(--shadow); }
+
+    .prod-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.65rem;
+    }
+
+    .prod-head h2 {
+      margin: 0;
+      font-size: 1.02rem;
+      font-weight: 700;
+    }
+
+    .prod-head .propill {
+      font-size: 0.76rem;
+      color: var(--muted);
+      background: var(--surface2);
+      padding: 0.22rem 0.55rem;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+    }
+
+    .prod-row {
+      display: grid;
+      grid-template-columns: 88px 1fr 44px;
+      gap: 0.55rem;
+      align-items: center;
+      font-size: 0.78rem;
+      margin-bottom: 0.4rem;
+      opacity: 0;
+      animation: fade-rise 0.4s ease-out forwards;
+    }
+
+    .prod-bar {
+      height: 9px;
+      background: var(--surface2);
+      border-radius: 99px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+    }
+
+    .prod-fill {
+      height: 100%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, var(--accent), #8b5cf6, var(--success));
+      width: 0;
+      max-width: 100%;
+      transition: width 0.75s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .prod-meta { color: var(--muted); text-align: right; font-weight: 600; }
+
     #toasts {
       position: fixed;
       bottom: 1.25rem;
@@ -934,7 +991,6 @@
     <header class="top">
       <div class="titles">
         <h1>Student Desk</h1>
-        <p>Your notes and to-dos are stored in <code>student_desk.db</code> on this device for your signed-in account.</p>
       </div>
       <div class="user-bar">
         <div class="toolbar-actions">
@@ -954,6 +1010,16 @@
     </nav>
 
     <div id="desk-panel" class="sheet-panel active" role="tabpanel" aria-labelledby="tab-app-desk">
+
+    <section class="card prod-wrap" id="productivity-card">
+      <div class="card-b">
+        <div class="prod-head">
+          <h2>Daily productivity (from to-dos)</h2>
+          <span class="propill" id="prod-summary"></span>
+        </div>
+        <div id="prod-chart" aria-label="Productivity by day"></div>
+      </div>
+    </section>
 
     <div class="layout">
       <div class="notes-col">
@@ -1095,6 +1161,8 @@
     const btnAddTodo = document.getElementById("btn-add-todo");
     const displayName = document.getElementById("display-name");
     const displayMeta = document.getElementById("display-meta");
+    const prodSummary = document.getElementById("prod-summary");
+    const prodChart = document.getElementById("prod-chart");
     const noteFileImport = document.getElementById("note-file-import");
     const btnImportNote = document.getElementById("btn-import-note");
     const toasts = document.getElementById("toasts");
@@ -1333,6 +1401,7 @@
       clearErr();
       await api("/api/todos/" + id, { method: "PATCH", body: JSON.stringify({ done }) });
       await loadTodos();
+      await loadProductivity();
     }
 
     async function removeTodo(id) {
@@ -1351,6 +1420,7 @@
       clearErr();
       await api("/api/todos/clear-done", { method: "POST" });
       await loadTodos();
+      await loadProductivity();
       toast("Completed tasks cleared");
     }
 
@@ -1377,6 +1447,53 @@
       if (dot > 0) n = n.slice(0, dot);
       n = n.trim();
       return n || "Imported";
+    }
+
+    function renderProductivity(data) {
+      const rows = (data && data.days) || [];
+      if (!prodChart || !prodSummary) return;
+      prodChart.innerHTML = "";
+      if (!rows.length) {
+        prodSummary.textContent = "No closed days yet — check back after UTC midnight.";
+        return;
+      }
+      const last = rows[rows.length - 1];
+      prodSummary.textContent = "Latest: " + last.day + " — " + last.score + "% · " +
+        last.tasks_completed + "/" + last.tasks_active + " tasks";
+
+      rows.slice().reverse().slice(0, 14).forEach(function (r, idx) {
+        const row = document.createElement("div");
+        row.className = "prod-row";
+        row.style.animationDelay = (0.08 + idx * 0.05) + "s";
+        const d = document.createElement("div");
+        d.textContent = r.day.slice(5);
+        const barWrap = document.createElement("div");
+        barWrap.className = "prod-bar";
+        const fill = document.createElement("div");
+        fill.className = "prod-fill";
+        var pct = Math.max(4, r.score);
+        requestAnimationFrame(function () {
+          fill.style.width = pct + "%";
+        });
+        barWrap.appendChild(fill);
+        const m = document.createElement("div");
+        m.className = "prod-meta";
+        m.textContent = r.score + "%";
+        row.appendChild(d);
+        row.appendChild(barWrap);
+        row.appendChild(m);
+        prodChart.appendChild(row);
+      });
+    }
+
+    async function loadProductivity() {
+      if (!prodSummary || !prodChart) return;
+      try {
+        const data = await api("/api/productivity?days=30");
+        renderProductivity(data);
+      } catch (e) {
+        prodSummary.textContent = "";
+      }
     }
 
     async function importNoteFromFile(file) {
@@ -1576,7 +1693,7 @@
 
       showAppTab("desk");
       try {
-        await Promise.all([loadNotes(), loadTodos(), loadPrefs()]);
+        await Promise.all([loadNotes(), loadTodos(), loadProductivity(), loadPrefs()]);
       } catch (e) {
         showErr(e.message || "Load failed");
       }
