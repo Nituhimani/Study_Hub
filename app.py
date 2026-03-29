@@ -26,18 +26,35 @@ def _env_clean(name: str) -> str | None:
     return v or None
 
 
-# On Render (or any host), set DATABASE_PATH to a file on a persistent disk, e.g. /data/student_desk.db
+# On Render, set DATABASE_PATH to a file on a *mounted* disk (e.g. /data/student_desk.db).
+# If the path is not writable (no disk, or typo), we fall back to BASE_DIR/student_desk.db.
 _db_override = _env_clean("DATABASE_PATH")
-DB_PATH = Path(_db_override) if _db_override else BASE_DIR / "student_desk.db"
+_DEFAULT_DB = BASE_DIR / "student_desk.db"
+_resolved_db_path: Path | None = None
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _get_db_path() -> Path:
+    global _resolved_db_path
+    if _resolved_db_path is not None:
+        return _resolved_db_path
+    candidate = Path(_db_override).expanduser() if _db_override else _DEFAULT_DB
+    if _db_override:
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            candidate = _DEFAULT_DB
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    _resolved_db_path = candidate.resolve()
+    return _resolved_db_path
+
+
 def db() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    path = _get_db_path()
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
 
